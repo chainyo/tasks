@@ -18,4 +18,12 @@ export const mockTasks: DailyTask[] = [
   },
 ];
 
-export const invokeMock = vi.fn();
+export const invokeMock = vi.fn<(command: string, args?: unknown) => Promise<unknown>>(() =>
+  Promise.resolve(undefined),
+);
+
+export const stopListeningMock = vi.fn();
+
+export const listenMock = vi.fn<
+  (event: string, handler: (event: { payload: DailyTask[] }) => void) => Promise<() => void>
+>(() => Promise.resolve(stopListeningMock));

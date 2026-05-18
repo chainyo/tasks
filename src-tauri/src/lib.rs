@@ -1,10 +1,10 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, thread, time::Duration};
 
-use chrono::Local;
+use chrono::{Duration as ChronoDuration, Local, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use tauri::{
-    Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder,
+    Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
@@ -31,9 +31,13 @@ fn get_daily_tasks(state: State<'_, AppState>) -> Result<Vec<DailyTask>, String>
 #[tauri::command]
 fn save_daily_tasks(
     contents: Vec<String>,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<DailyTask>, String> {
-    save_tasks(&state.db_path, &contents).map_err(|error| error.to_string())
+    let tasks = save_tasks(&state.db_path, &contents).map_err(|error| error.to_string())?;
+    app.emit("daily-tasks-changed", &tasks)
+        .map_err(|error| error.to_string())?;
+    Ok(tasks)
 }
 
 #[tauri::command]
@@ -43,6 +47,46 @@ fn set_today_completed(
     state: State<'_, AppState>,
 ) -> Result<Vec<DailyTask>, String> {
     set_completed(&state.db_path, id, completed).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reorder_daily_tasks(
+    ids: Vec<i64>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<DailyTask>, String> {
+    let tasks = reorder_tasks(&state.db_path, &ids).map_err(|error| error.to_string())?;
+    app.emit("daily-tasks-changed", &tasks)
+        .map_err(|error| error.to_string())?;
+    Ok(tasks)
+}
+
+#[tauri::command]
+fn hide_sticker_until_tomorrow(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    hide_sticker_for_current_task_day(&state.db_path).map_err(|error| error.to_string())?;
+    if let Some(window) = app.get_webview_window("main") {
+        window.hide().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn resize_sticker_window(height: u32, app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    let current_size = window.outer_size().map_err(|error| error.to_string())?;
+    let scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
+    let current_width = current_size.width as f64 / scale_factor;
+    let next_height = height.max(32) as f64;
+    window
+        .set_size(LogicalSize::new(current_width, next_height))
+        .map_err(|error| error.to_string())?;
+    position_window_top_right(&window);
+    Ok(())
 }
 
 #[tauri::command]
@@ -81,15 +125,22 @@ pub fn run() {
                 .map_err(|error| format!("failed to create app data dir: {error}"))?;
             let db_path = app_data_dir.join("daily-task.sqlite3");
             init_database(&db_path).map_err(|error| error.to_string())?;
-            app.manage(AppState { db_path });
+            app.manage(AppState {
+                db_path: db_path.clone(),
+            });
             create_menu_bar_icon(app).map_err(|error| error.to_string())?;
             position_main_window(app);
+            sync_sticker_visibility(app, &db_path);
+            start_sticker_visibility_poll(app.handle().clone(), db_path);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_daily_tasks,
             save_daily_tasks,
             set_today_completed,
+            reorder_daily_tasks,
+            hide_sticker_until_tomorrow,
+            resize_sticker_window,
             open_config_window
         ])
         .run(tauri::generate_context!())
@@ -122,6 +173,40 @@ fn position_main_window(app: &tauri::App) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    position_window_top_right(&window);
+}
+
+fn sync_sticker_visibility(app: &tauri::App, path: &PathBuf) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    if should_hide_sticker(path).unwrap_or(false) {
+        let _ = window.hide();
+    } else {
+        let _ = window.show();
+    }
+}
+
+fn start_sticker_visibility_poll(app: tauri::AppHandle, path: PathBuf) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(60));
+            let Some(window) = app.get_webview_window("main") else {
+                continue;
+            };
+
+            if should_hide_sticker(&path).unwrap_or(false) {
+                let _ = window.hide();
+            } else {
+                let _ = window.show();
+                position_window_top_right(&window);
+            }
+        }
+    });
+}
+
+fn position_window_top_right(window: &tauri::WebviewWindow) {
     let Ok(Some(monitor)) = window.current_monitor() else {
         return;
     };
@@ -222,6 +307,69 @@ fn set_completed(path: &PathBuf, id: i64, completed: bool) -> rusqlite::Result<V
     tasks_for_today(path)
 }
 
+fn hide_sticker_for_current_task_day(path: &PathBuf) -> rusqlite::Result<()> {
+    let connection = open_initialized(path)?;
+    connection.execute(
+        "
+        INSERT INTO settings (key, value)
+        VALUES ('hidden_task_date', ?1)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        ",
+        [today()],
+    )?;
+    Ok(())
+}
+
+fn should_hide_sticker(path: &PathBuf) -> rusqlite::Result<bool> {
+    let connection = open_initialized(path)?;
+    let hidden_date = connection
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'hidden_task_date'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    Ok(hidden_date.as_deref() == Some(today().as_str()))
+}
+
+fn reorder_tasks(path: &PathBuf, ids: &[i64]) -> rusqlite::Result<Vec<DailyTask>> {
+    let mut connection = open_initialized(path)?;
+    let transaction = connection.transaction()?;
+    let mut position = 0_i64;
+
+    for id in ids {
+        let updated = transaction.execute(
+            "UPDATE tasks SET position = ?1 WHERE id = ?2 AND active = 1",
+            params![position, id],
+        )?;
+
+        if updated > 0 {
+            position += 1;
+        }
+    }
+
+    let mut statement = transaction
+        .prepare("SELECT id FROM tasks WHERE active = 1 ORDER BY position ASC, id ASC")?;
+    let existing_ids = statement
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+
+    for id in existing_ids {
+        if !ids.contains(&id) {
+            transaction.execute(
+                "UPDATE tasks SET position = ?1 WHERE id = ?2 AND active = 1",
+                params![position, id],
+            )?;
+            position += 1;
+        }
+    }
+
+    transaction.commit()?;
+    tasks_for_today(path)
+}
+
 fn open_initialized(path: &PathBuf) -> rusqlite::Result<Connection> {
     init_database(path)?;
     Connection::open(path)
@@ -297,7 +445,14 @@ fn normalized_contents(contents: &[String]) -> Vec<String> {
 }
 
 fn today() -> String {
-    Local::now().date_naive().format("%Y-%m-%d").to_string()
+    task_date_for_naive(Local::now().naive_local())
+}
+
+fn task_date_for_naive(now: NaiveDateTime) -> String {
+    (now - ChronoDuration::hours(5))
+        .date()
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -322,6 +477,32 @@ mod tests {
         assert_eq!(tasks[0].content, DEFAULT_TASK);
         assert_eq!(tasks[0].completed, false);
         assert_eq!(tasks[0].date, today());
+    }
+
+    #[test]
+    fn task_day_starts_at_five_am() {
+        let before_rollover = chrono::NaiveDate::from_ymd_opt(2026, 5, 18)
+            .expect("date")
+            .and_hms_opt(4, 59, 0)
+            .expect("time");
+        let after_rollover = chrono::NaiveDate::from_ymd_opt(2026, 5, 18)
+            .expect("date")
+            .and_hms_opt(5, 0, 0)
+            .expect("time");
+
+        assert_eq!(task_date_for_naive(before_rollover), "2026-05-17");
+        assert_eq!(task_date_for_naive(after_rollover), "2026-05-18");
+    }
+
+    #[test]
+    fn hides_sticker_only_for_current_task_day() {
+        let path = database_path();
+
+        assert_eq!(should_hide_sticker(&path).expect("visibility"), false);
+
+        hide_sticker_for_current_task_day(&path).expect("hidden");
+
+        assert_eq!(should_hide_sticker(&path).expect("visibility"), true);
     }
 
     #[test]
@@ -375,5 +556,25 @@ mod tests {
 
         assert_eq!(tasks[0].content, "Keep the habit");
         assert_eq!(tasks[0].completed, true);
+    }
+
+    #[test]
+    fn reorders_active_tasks_by_id() {
+        let path = database_path();
+        let saved = save_tasks(
+            &path,
+            &[
+                "First".to_string(),
+                "Second".to_string(),
+                "Third".to_string(),
+            ],
+        )
+        .expect("saved tasks");
+
+        let reordered = reorder_tasks(&path, &[saved[2].id, saved[0].id]).expect("reordered tasks");
+
+        assert_eq!(reordered[0].content, "Third");
+        assert_eq!(reordered[1].content, "First");
+        assert_eq!(reordered[2].content, "Second");
     }
 }
