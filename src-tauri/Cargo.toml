@@ -1,0 +1,25 @@
+[package]
+name = "daily-task-sticker"
+version = "0.1.0"
+description = "A tiny always-on-top daily task sticker for macOS."
+authors = ["Daily Task Sticker"]
+edition = "2024"
+rust-version = "1.95"
+
+[lib]
+name = "daily_task_sticker_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.2", features = [] }
+
+[dependencies]
+chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+tauri = { version = "2.11.2", features = ["tray-icon"] }
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-pilot = "0.5.2"
+
+[dev-dependencies]
+tempfile = "3.27.0"

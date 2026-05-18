@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default permissions for the daily task sticker windows.","local":true,"windows":["main","config"],"permissions":["core:default","opener:default","pilot:default"]}}
