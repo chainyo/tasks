@@ -3,9 +3,38 @@ import { renderWithQueryClient } from "../test/render";
 import { invokeMock, mockTask, mockTasks } from "../test/tauriMock";
 import { ConfigView } from "./ConfigView";
 
+function mockConfigCommands() {
+  invokeMock.mockImplementation((command, args) => {
+    if (command === "get_daily_tasks") {
+      return Promise.resolve(mockTasks);
+    }
+
+    if (command === "get_sticker_settings") {
+      return Promise.resolve({ corner: "top-right" });
+    }
+
+    if (command === "save_daily_tasks") {
+      return Promise.resolve(
+        (args as { contents: string[] }).contents.map((content, index) => ({
+          id: index + 1,
+          content,
+          date: "2026-05-18",
+          completed: false,
+        })),
+      );
+    }
+
+    if (command === "save_sticker_settings") {
+      return Promise.resolve(args);
+    }
+
+    return Promise.resolve(undefined);
+  });
+}
+
 describe("ConfigView", () => {
   it("loads existing tasks into editable input rows", async () => {
-    invokeMock.mockResolvedValueOnce(mockTasks);
+    mockConfigCommands();
 
     renderWithQueryClient(<ConfigView />);
 
@@ -14,15 +43,13 @@ describe("ConfigView", () => {
   });
 
   it("saves trimmed task rows", async () => {
-    invokeMock.mockResolvedValueOnce(mockTasks);
-    invokeMock.mockResolvedValueOnce([{ ...mockTask, content: "Ship the build" }]);
+    mockConfigCommands();
 
     renderWithQueryClient(<ConfigView />);
 
     const firstInput = await screen.findByDisplayValue(mockTask.content);
     fireEvent.change(firstInput, { target: { value: "  Ship the build  " } });
     fireEvent.change(screen.getByDisplayValue("Close the loop"), { target: { value: "   " } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("save_daily_tasks", { contents: ["Ship the build"] }),
@@ -30,32 +57,79 @@ describe("ConfigView", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Saved");
   });
 
+  it("saves the selected sticker corner", async () => {
+    mockConfigCommands();
+
+    renderWithQueryClient(<ConfigView />);
+
+    await screen.findByDisplayValue(mockTask.content);
+    fireEvent.click(screen.getByLabelText("Bottom left"));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("save_sticker_settings", {
+        corner: "bottom-left",
+      }),
+    );
+  });
+
   it("does not save blank content", async () => {
-    invokeMock.mockImplementationOnce(() => new Promise(() => undefined));
+    invokeMock.mockImplementation((command) => {
+      if (command === "get_daily_tasks") {
+        return new Promise(() => undefined);
+      }
+
+      if (command === "get_sticker_settings") {
+        return Promise.resolve({ corner: "top-right" });
+      }
+
+      return Promise.resolve(undefined);
+    });
 
     const { container } = renderWithQueryClient(<ConfigView />);
 
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    fireEvent.submit(container.querySelector("form") as HTMLFormElement);
+    expect(container.querySelector("form")).not.toBeInTheDocument();
 
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).not.toHaveBeenCalledWith("save_daily_tasks", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("save_sticker_settings", expect.anything());
   });
 
-  it("disables save while a save is pending", async () => {
-    invokeMock.mockResolvedValueOnce([mockTask]);
-    invokeMock.mockImplementationOnce(() => new Promise(() => undefined));
+  it("shows saving while task autosave is pending", async () => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "get_daily_tasks") {
+        return Promise.resolve([mockTask]);
+      }
+
+      if (command === "get_sticker_settings") {
+        return Promise.resolve({ corner: "top-right" });
+      }
+
+      if (command === "save_daily_tasks") {
+        return new Promise(() => undefined);
+      }
+
+      return Promise.resolve(undefined);
+    });
 
     renderWithQueryClient(<ConfigView />);
 
     const firstInput = await screen.findByDisplayValue(mockTask.content);
     fireEvent.change(firstInput, { target: { value: "Keep focus" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Saving..."));
   });
 
   it("adds and removes task rows", async () => {
-    invokeMock.mockResolvedValueOnce([mockTask]);
+    invokeMock.mockImplementation((command) => {
+      if (command === "get_daily_tasks") {
+        return Promise.resolve([mockTask]);
+      }
+
+      if (command === "get_sticker_settings") {
+        return Promise.resolve({ corner: "top-right" });
+      }
+
+      return Promise.resolve(undefined);
+    });
 
     renderWithQueryClient(<ConfigView />);
 
@@ -71,7 +145,17 @@ describe("ConfigView", () => {
   });
 
   it("shows a loading placeholder before content loads", () => {
-    invokeMock.mockImplementationOnce(() => new Promise(() => undefined));
+    invokeMock.mockImplementation((command) => {
+      if (command === "get_daily_tasks") {
+        return new Promise(() => undefined);
+      }
+
+      if (command === "get_sticker_settings") {
+        return Promise.resolve({ corner: "top-right" });
+      }
+
+      return Promise.resolve(undefined);
+    });
 
     renderWithQueryClient(<ConfigView />);
 

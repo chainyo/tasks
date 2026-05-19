@@ -4,19 +4,30 @@ import {
   type DailyTask,
   type DailyTaskUpdate,
   getDailyTasks,
+  getStickerSettings,
   hideStickerUntilTomorrow,
   listenDailyTasksChanged,
   reorderDailyTasks,
+  type StickerSettings,
   saveDailyTasks,
+  saveStickerSettings,
   setTodayCompleted,
 } from "../lib/tauri";
 
 export const dailyTaskQueryKey = ["daily-tasks"] as const;
+export const stickerSettingsQueryKey = ["sticker-settings"] as const;
 
 export function useDailyTask() {
   return useQuery({
     queryKey: dailyTaskQueryKey,
     queryFn: getDailyTasks,
+  });
+}
+
+export function useStickerSettings() {
+  return useQuery({
+    queryKey: stickerSettingsQueryKey,
+    queryFn: getStickerSettings,
   });
 }
 
@@ -40,6 +51,16 @@ export function useSaveDailyTask() {
   return useMutation({
     mutationFn: (update: DailyTaskUpdate) => saveDailyTasks(update),
     onSuccess: (tasks) => queryClient.setQueryData<DailyTask[]>(dailyTaskQueryKey, tasks),
+  });
+}
+
+export function useSaveStickerSettings() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (settings: StickerSettings) => saveStickerSettings(settings),
+    onSuccess: (settings) =>
+      queryClient.setQueryData<StickerSettings>(stickerSettingsQueryKey, settings),
   });
 }
 

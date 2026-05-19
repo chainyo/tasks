@@ -2,9 +2,10 @@ use std::{fs, path::PathBuf, thread, time::Duration};
 
 use chrono::{Duration as ChronoDuration, Local, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
-    Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder,
+    Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl,
+    WebviewWindowBuilder,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
@@ -23,9 +24,68 @@ pub struct DailyTask {
     completed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum StickerCorner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl StickerCorner {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TopLeft => "top-left",
+            Self::TopRight => "top-right",
+            Self::BottomLeft => "bottom-left",
+            Self::BottomRight => "bottom-right",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        match value {
+            "top-left" => Self::TopLeft,
+            "bottom-left" => Self::BottomLeft,
+            "bottom-right" => Self::BottomRight,
+            _ => Self::TopRight,
+        }
+    }
+}
+
+impl Default for StickerCorner {
+    fn default() -> Self {
+        Self::TopRight
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StickerSettings {
+    corner: StickerCorner,
+}
+
 #[tauri::command]
 fn get_daily_tasks(state: State<'_, AppState>) -> Result<Vec<DailyTask>, String> {
     tasks_for_today(&state.db_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_sticker_settings(state: State<'_, AppState>) -> Result<StickerSettings, String> {
+    let corner = sticker_corner(&state.db_path).map_err(|error| error.to_string())?;
+    Ok(StickerSettings { corner })
+}
+
+#[tauri::command]
+fn save_sticker_settings(
+    corner: StickerCorner,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<StickerSettings, String> {
+    save_sticker_corner(&state.db_path, corner).map_err(|error| error.to_string())?;
+    if let Some(window) = app.get_webview_window("main") {
+        position_window(&window, corner);
+    }
+    Ok(StickerSettings { corner })
 }
 
 #[tauri::command]
@@ -74,7 +134,11 @@ fn hide_sticker_until_tomorrow(
 }
 
 #[tauri::command]
-fn resize_sticker_window(height: u32, app: tauri::AppHandle) -> Result<(), String> {
+fn resize_sticker_window(
+    height: u32,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
     };
@@ -85,7 +149,8 @@ fn resize_sticker_window(height: u32, app: tauri::AppHandle) -> Result<(), Strin
     window
         .set_size(LogicalSize::new(current_width, next_height))
         .map_err(|error| error.to_string())?;
-    position_window_top_right(&window);
+    let corner = sticker_corner(&state.db_path).unwrap_or_default();
+    position_window(&window, corner);
     Ok(())
 }
 
@@ -99,7 +164,7 @@ fn open_config_window(app: tauri::AppHandle) -> Result<(), String> {
 
     WebviewWindowBuilder::new(&app, "config", WebviewUrl::App("index.html#config".into()))
         .title("Daily Sticker Settings")
-        .inner_size(560.0, 420.0)
+        .inner_size(560.0, 500.0)
         .resizable(false)
         .decorations(true)
         .always_on_top(true)
@@ -136,6 +201,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_daily_tasks,
+            get_sticker_settings,
+            save_sticker_settings,
             save_daily_tasks,
             set_today_completed,
             reorder_daily_tasks,
@@ -173,7 +240,9 @@ fn position_main_window(app: &tauri::App) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    position_window_top_right(&window);
+    let state = app.state::<AppState>();
+    let corner = sticker_corner(&state.db_path).unwrap_or_default();
+    position_window(&window, corner);
 }
 
 fn sync_sticker_visibility(app: &tauri::App, path: &PathBuf) {
@@ -200,23 +269,58 @@ fn start_sticker_visibility_poll(app: tauri::AppHandle, path: PathBuf) {
                 let _ = window.hide();
             } else {
                 let _ = window.show();
-                position_window_top_right(&window);
+                let corner = sticker_corner(&path).unwrap_or_default();
+                position_window(&window, corner);
             }
         }
     });
 }
 
-fn position_window_top_right(window: &tauri::WebviewWindow) {
+fn position_window(window: &tauri::WebviewWindow, corner: StickerCorner) {
     let Ok(Some(monitor)) = window.current_monitor() else {
         return;
     };
-    let monitor_size = monitor.size();
+    let work_area = monitor.work_area();
     let window_size = window.outer_size().ok();
-    let width = window_size.map_or(214, |size| size.width) as i32;
-    let margin = 18;
-    let x = monitor.position().x + monitor_size.width as i32 - width - margin;
-    let y = monitor.position().y + margin;
-    let _ = window.set_position(PhysicalPosition::new(x, y));
+    let fallback_size = PhysicalSize::new(214, 86);
+    let size = window_size.unwrap_or(fallback_size);
+    let position = corner_position(
+        corner,
+        work_area.position.x,
+        work_area.position.y,
+        work_area.size.width,
+        work_area.size.height,
+        size.width,
+        size.height,
+        18,
+    );
+    let _ = window.set_position(position);
+}
+
+fn corner_position(
+    corner: StickerCorner,
+    area_x: i32,
+    area_y: i32,
+    area_width: u32,
+    area_height: u32,
+    window_width: u32,
+    window_height: u32,
+    margin: i32,
+) -> PhysicalPosition<i32> {
+    let max_x = area_x + area_width as i32 - window_width as i32 - margin;
+    let max_y = area_y + area_height as i32 - window_height as i32 - margin;
+    let min_x = area_x + margin;
+    let min_y = area_y + margin;
+    let x = match corner {
+        StickerCorner::TopLeft | StickerCorner::BottomLeft => min_x,
+        StickerCorner::TopRight | StickerCorner::BottomRight => max_x.max(min_x),
+    };
+    let y = match corner {
+        StickerCorner::TopLeft | StickerCorner::TopRight => min_y,
+        StickerCorner::BottomLeft | StickerCorner::BottomRight => max_y.max(min_y),
+    };
+
+    PhysicalPosition::new(x, y)
 }
 
 fn init_database(path: &PathBuf) -> rusqlite::Result<()> {
@@ -331,6 +435,35 @@ fn should_hide_sticker(path: &PathBuf) -> rusqlite::Result<bool> {
         .optional()?;
 
     Ok(hidden_date.as_deref() == Some(today().as_str()))
+}
+
+fn sticker_corner(path: &PathBuf) -> rusqlite::Result<StickerCorner> {
+    let connection = open_initialized(path)?;
+    let corner = connection
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'sticker_corner'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    Ok(corner
+        .as_deref()
+        .map(StickerCorner::from_str)
+        .unwrap_or_default())
+}
+
+fn save_sticker_corner(path: &PathBuf, corner: StickerCorner) -> rusqlite::Result<()> {
+    let connection = open_initialized(path)?;
+    connection.execute(
+        "
+        INSERT INTO settings (key, value)
+        VALUES ('sticker_corner', ?1)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        ",
+        [corner.as_str()],
+    )?;
+    Ok(())
 }
 
 fn reorder_tasks(path: &PathBuf, ids: &[i64]) -> rusqlite::Result<Vec<DailyTask>> {
@@ -503,6 +636,31 @@ mod tests {
         hide_sticker_for_current_task_day(&path).expect("hidden");
 
         assert_eq!(should_hide_sticker(&path).expect("visibility"), true);
+    }
+
+    #[test]
+    fn saves_sticker_corner_setting() {
+        let path = database_path();
+
+        assert_eq!(
+            sticker_corner(&path).expect("corner"),
+            StickerCorner::TopRight
+        );
+
+        save_sticker_corner(&path, StickerCorner::BottomLeft).expect("saved corner");
+
+        assert_eq!(
+            sticker_corner(&path).expect("corner"),
+            StickerCorner::BottomLeft
+        );
+    }
+
+    #[test]
+    fn positions_bottom_right_inside_work_area() {
+        let position = corner_position(StickerCorner::BottomRight, 0, 25, 1440, 835, 214, 86, 18);
+
+        assert_eq!(position.x, 1208);
+        assert_eq!(position.y, 756);
     }
 
     #[test]

@@ -56,14 +56,24 @@ describe("AppShell", () => {
 
   it("renders the App config mode from the hash", async () => {
     window.location.hash = "#config";
-    invokeMock.mockResolvedValueOnce([
-      {
-        id: 1,
-        content: "Plan the day",
-        date: "2026-05-18",
-        completed: false,
-      },
-    ]);
+    invokeMock.mockImplementation((command) => {
+      if (command === "get_daily_tasks") {
+        return Promise.resolve([
+          {
+            id: 1,
+            content: "Plan the day",
+            date: "2026-05-18",
+            completed: false,
+          },
+        ]);
+      }
+
+      if (command === "get_sticker_settings") {
+        return Promise.resolve({ corner: "top-right" });
+      }
+
+      return Promise.resolve(undefined);
+    });
 
     renderWithQueryClient(<App />);
 
@@ -71,14 +81,24 @@ describe("AppShell", () => {
   });
 
   it("renders the config window mode", async () => {
-    invokeMock.mockResolvedValueOnce([
-      {
-        id: 1,
-        content: "Plan the day",
-        date: "2026-05-18",
-        completed: false,
-      },
-    ]);
+    invokeMock.mockImplementation((command) => {
+      if (command === "get_daily_tasks") {
+        return Promise.resolve([
+          {
+            id: 1,
+            content: "Plan the day",
+            date: "2026-05-18",
+            completed: false,
+          },
+        ]);
+      }
+
+      if (command === "get_sticker_settings") {
+        return Promise.resolve({ corner: "top-right" });
+      }
+
+      return Promise.resolve(undefined);
+    });
 
     renderWithQueryClient(<AppShell mode="config" />);
 

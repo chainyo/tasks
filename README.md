@@ -2,7 +2,7 @@
 
 Daily Task Sticker is a tiny macOS sticky task app built with Tauri, Vite, React, TanStack Query, Tailwind CSS, and shadcn-style components.
 
-It keeps a compact always-on-top checklist in the top-right corner of the screen. Tasks can be edited from the macOS menu bar icon, reordered from the sticky, and checked off during the day. When every task is complete, the app can hide the sticky until the next task day. A task day starts at 5:00 AM local computer time.
+It keeps a compact always-on-top checklist in a selectable screen corner. Tasks can be edited from the macOS menu bar icon, reordered from the sticky, and checked off during the day. When every task is complete, the app can hide the sticky until the next task day. A task day starts at 5:00 AM local computer time.
 
 Task content and daily completion state are stored in a local SQLite file managed by the Rust backend.
 
