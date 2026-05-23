@@ -62,6 +62,7 @@ export function ConfigView() {
   const taskSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasHydratedTasks = useRef(false);
   const lastSavedTaskSignature = useRef("");
+  const selectedCorner = useRef<StickerCorner>("top-right");
   const [taskRows, setTaskRows] = useState<TaskRow[]>([newTaskRow("new-0")]);
   const [corner, setCorner] = useState<StickerCorner>("top-right");
   const [displayId, setDisplayId] = useState<string | null>(null);
@@ -81,6 +82,7 @@ export function ConfigView() {
 
   useEffect(() => {
     if (settingsQuery.data) {
+      selectedCorner.current = settingsQuery.data.corner;
       setCorner(settingsQuery.data.corner);
       setDisplayId(
         settingsQuery.data.display_id ??
@@ -167,70 +169,76 @@ export function ConfigView() {
             Add task
           </Button>
         </div>
-        <fieldset className="space-y-2">
-          <legend className="font-medium text-sm">Sticker corner</legend>
-          <div className="grid grid-cols-4 gap-2">
-            {cornerOptions.map((option) => (
-              <button
-                aria-label={option.label}
-                aria-pressed={corner === option.value}
-                className={cn(
-                  "group relative size-12 rounded-md border border-input bg-background shadow-xs outline-none transition-all duration-150 hover:-translate-y-0.5 hover:scale-105 hover:shadow-md focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                  option.tintClassName,
-                  corner === option.value && "border-primary bg-accent ring-2 ring-primary/15",
-                )}
-                key={option.value}
-                title={option.label}
-                type="button"
-                onClick={() => {
-                  setCorner(option.value);
-                  saveSettings.mutate({ corner: option.value, display_id: displayId });
-                }}
-              >
-                <span
-                  aria-hidden="true"
-                  className="absolute inset-2 rounded-sm border border-muted-foreground/30 bg-white transition-colors group-hover:border-muted-foreground/50"
-                />
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "absolute size-2.5 rounded-[3px] shadow-sm transition-transform group-hover:scale-125",
-                    option.markerClassName,
-                  )}
-                />
-              </button>
-            ))}
-          </div>
-        </fieldset>
-        <fieldset className="space-y-2">
-          <legend className="font-medium text-sm">Sticker display</legend>
-          <div className="grid gap-2">
-            {settingsQuery.data?.displays.length ? (
-              settingsQuery.data.displays.map((display) => (
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-5">
+          <fieldset className="space-y-2">
+            <legend className="font-medium text-sm">Sticker corner</legend>
+            <div className="grid grid-cols-2 gap-2">
+              {cornerOptions.map((option) => (
                 <button
-                  aria-pressed={displayId === display.id}
+                  aria-label={option.label}
+                  aria-pressed={corner === option.value}
                   className={cn(
-                    "flex h-9 items-center justify-between rounded-md border border-input bg-background px-3 text-left text-sm shadow-xs outline-none transition-colors hover:border-primary/60 hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                    displayId === display.id && "border-primary bg-accent ring-2 ring-primary/15",
+                    "group relative size-12 rounded-md border border-input bg-background shadow-xs outline-none transition-all duration-150 hover:-translate-y-0.5 hover:scale-105 hover:shadow-md focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                    option.tintClassName,
+                    corner === option.value && "border-primary bg-accent ring-2 ring-primary/15",
                   )}
-                  key={display.id}
+                  key={option.value}
+                  title={option.label}
                   type="button"
                   onClick={() => {
-                    setDisplayId(display.id);
-                    saveSettings.mutate({ corner, display_id: display.id });
+                    selectedCorner.current = option.value;
+                    setCorner(option.value);
+                    saveSettings.mutate({ corner: option.value, display_id: displayId });
                   }}
                 >
-                  <span>{display.label}</span>
-                  {display.current ? (
-                    <span className="text-muted-foreground text-xs">Current</span>
-                  ) : null}
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-2 rounded-sm border border-muted-foreground/30 bg-white transition-colors group-hover:border-muted-foreground/50"
+                  />
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "absolute size-2.5 rounded-[3px] shadow-sm transition-transform group-hover:scale-125",
+                      option.markerClassName,
+                    )}
+                  />
                 </button>
-              ))
-            ) : (
-              <span className="text-muted-foreground text-sm">Detecting displays...</span>
-            )}
-          </div>
-        </fieldset>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="min-w-0 space-y-2">
+            <legend className="font-medium text-sm">Sticker display</legend>
+            <div className="grid gap-2">
+              {settingsQuery.data?.displays.length ? (
+                settingsQuery.data.displays.map((display) => (
+                  <button
+                    aria-pressed={displayId === display.id}
+                    className={cn(
+                      "flex h-9 min-w-0 items-center justify-between gap-3 rounded-md border border-input bg-background px-3 text-left text-sm shadow-xs outline-none transition-colors hover:border-primary/60 hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                      displayId === display.id && "border-primary bg-accent ring-2 ring-primary/15",
+                    )}
+                    key={display.id}
+                    type="button"
+                    onClick={() => {
+                      setDisplayId(display.id);
+                      saveSettings.mutate({
+                        corner: selectedCorner.current,
+                        display_id: display.id,
+                      });
+                    }}
+                  >
+                    <span className="min-w-0 truncate">{display.label}</span>
+                    {display.current ? (
+                      <span className="shrink-0 text-muted-foreground text-xs">Current</span>
+                    ) : null}
+                  </button>
+                ))
+              ) : (
+                <span className="text-muted-foreground text-sm">Detecting displays...</span>
+              )}
+            </div>
+          </fieldset>
+        </div>
         {isSaving || saved ? (
           <div className="flex justify-end">
             <span className="text-muted-foreground text-sm" role="status">

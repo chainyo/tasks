@@ -1,11 +1,11 @@
-use std::{fs, path::PathBuf, thread, time::Duration};
+use std::{collections::HashMap, fs, path::PathBuf, thread, time::Duration};
 
 use chrono::{Duration as ChronoDuration, Local, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use tauri::{
-    Emitter, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, State, WebviewUrl,
-    WebviewWindowBuilder,
+    Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, State,
+    WebviewUrl, WebviewWindowBuilder,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
@@ -159,19 +159,20 @@ fn resize_sticker_window(
         return Ok(());
     };
     let current_size = window.outer_size().map_err(|error| error.to_string())?;
-    let scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
-    let current_width = current_size.width as f64 / scale_factor;
+    let current_scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
+    let current_width = current_size.width as f64 / current_scale_factor;
     let next_height = height.max(32) as f64;
-    let next_size = PhysicalSize::new(
-        current_size.width,
-        (next_height * scale_factor).ceil() as u32,
-    );
     window
         .set_size(LogicalSize::new(current_width, next_height))
         .map_err(|error| error.to_string())?;
     let corner = sticker_corner(&state.db_path).unwrap_or_default();
     let display_id = sticker_display_id(&state.db_path).unwrap_or_default();
-    position_window_with_size(&window, corner, display_id.as_deref(), next_size);
+    position_window_with_logical_size(
+        &window,
+        corner,
+        display_id.as_deref(),
+        LogicalSize::new(current_width, next_height),
+    );
     Ok(())
 }
 
@@ -185,7 +186,7 @@ fn open_config_window(app: tauri::AppHandle) -> Result<(), String> {
 
     WebviewWindowBuilder::new(&app, "config", WebviewUrl::App("index.html#config".into()))
         .title("Daily Sticker Settings")
-        .inner_size(560.0, 500.0)
+        .inner_size(600.0, 640.0)
         .resizable(false)
         .decorations(true)
         .always_on_top(true)
@@ -323,6 +324,7 @@ fn sticker_displays(
     let current_id = window
         .current_monitor()?
         .map(|monitor| monitor_id(&monitor));
+    let native_labels = native_monitor_labels();
     Ok(window
         .available_monitors()?
         .into_iter()
@@ -335,19 +337,92 @@ fn sticker_displays(
 
             StickerDisplay {
                 id,
-                label: monitor_label(&monitor, index),
+                label: monitor_label(&monitor, index, &native_labels),
                 current,
             }
         })
         .collect())
 }
 
-fn monitor_label(monitor: &Monitor, index: usize) -> String {
-    monitor
-        .name()
-        .filter(|name| !name.trim().is_empty())
-        .cloned()
+#[derive(Default)]
+struct NativeMonitorLabels {
+    by_model_number: HashMap<String, String>,
+    ordered: Vec<String>,
+}
+
+fn monitor_label(monitor: &Monitor, index: usize, native_labels: &NativeMonitorLabels) -> String {
+    display_label_from_names(
+        monitor.name().map(String::as_str),
+        monitor.name().and_then(|name| {
+            monitor_number_suffix(name)
+                .and_then(|model_number| native_labels.by_model_number.get(model_number))
+        }),
+        native_labels.ordered.get(index),
+        index,
+    )
+}
+
+fn display_label_from_names(
+    tauri_name: Option<&str>,
+    model_matched_native_name: Option<&String>,
+    indexed_native_name: Option<&String>,
+    index: usize,
+) -> String {
+    if let Some(native_name) = model_matched_native_name.filter(|name| !name.trim().is_empty()) {
+        return native_name.clone();
+    }
+
+    if let Some(native_name) = indexed_native_name.filter(|name| !name.trim().is_empty()) {
+        return native_name.clone();
+    }
+
+    tauri_name
+        .filter(|name| !name.trim().is_empty() && !is_monitor_number_label(name))
+        .map(str::to_string)
         .unwrap_or_else(|| format!("Display {}", index + 1))
+}
+
+fn is_monitor_number_label(name: &str) -> bool {
+    monitor_number_suffix(name).is_some()
+}
+
+fn monitor_number_suffix(name: &str) -> Option<&str> {
+    name.strip_prefix("Monitor #").filter(|suffix| {
+        !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn native_monitor_labels() -> NativeMonitorLabels {
+    use core_graphics::display::CGDisplay;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return NativeMonitorLabels::default();
+    };
+
+    let mut labels = NativeMonitorLabels::default();
+
+    for screen in NSScreen::screens(mtm).iter() {
+        let name = screen.localizedName().to_string();
+        if name.trim().is_empty() {
+            continue;
+        }
+
+        let model_number = CGDisplay::new(screen.CGDirectDisplayID()).model_number();
+        labels
+            .by_model_number
+            .insert(model_number.to_string(), name.clone());
+        labels.ordered.push(name);
+    }
+
+    labels
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_monitor_labels() -> NativeMonitorLabels {
+    NativeMonitorLabels::default()
 }
 
 fn monitor_id(monitor: &Monitor) -> String {
@@ -369,21 +444,32 @@ fn monitor_bounds_id(x: i32, y: i32, width: u32, height: u32) -> String {
 }
 
 fn position_window(window: &tauri::WebviewWindow, corner: StickerCorner, display_id: Option<&str>) {
-    let window_size = window.outer_size().ok();
-    let fallback_size = PhysicalSize::new(214, 86);
-    let size = window_size.unwrap_or(fallback_size);
-    position_window_with_size(window, corner, display_id, size);
+    let scale_factor = window.scale_factor().unwrap_or(1.0);
+    let size = window
+        .outer_size()
+        .map(|size| {
+            LogicalSize::new(
+                size.width as f64 / scale_factor,
+                size.height as f64 / scale_factor,
+            )
+        })
+        .unwrap_or_else(|_| LogicalSize::new(214.0, 86.0));
+    position_window_with_logical_size(window, corner, display_id, size);
 }
 
-fn position_window_with_size(
+fn position_window_with_logical_size(
     window: &tauri::WebviewWindow,
     corner: StickerCorner,
     display_id: Option<&str>,
-    size: PhysicalSize<u32>,
+    size: LogicalSize<f64>,
 ) {
     let Ok(Some(monitor)) = target_monitor(window, display_id) else {
         return;
     };
+    let size = PhysicalSize::new(
+        (size.width * monitor.scale_factor()).ceil() as u32,
+        (size.height * monitor.scale_factor()).ceil() as u32,
+    );
     let work_area = monitor.work_area();
     let position = corner_position(
         corner,
@@ -395,7 +481,11 @@ fn position_window_with_size(
         size.height,
         18,
     );
-    let _ = window.set_position(position);
+    let scale_factor = monitor.scale_factor();
+    let _ = window.set_position(LogicalPosition::new(
+        position.x as f64 / scale_factor,
+        position.y as f64 / scale_factor,
+    ));
 }
 
 fn target_monitor(
@@ -825,6 +915,36 @@ mod tests {
     fn builds_stable_monitor_ids() {
         assert_eq!(monitor_name_id("Studio Display"), "name:Studio Display");
         assert_eq!(monitor_bounds_id(0, 0, 1440, 900), "bounds:0:0:1440:900");
+    }
+
+    #[test]
+    fn prefers_native_monitor_names_over_numeric_labels() {
+        assert_eq!(
+            display_label_from_names(
+                Some("Monitor #41041"),
+                Some(&"Built-in Display".to_string()),
+                None,
+                0
+            ),
+            "Built-in Display"
+        );
+        assert_eq!(
+            display_label_from_names(
+                Some("Monitor #41041"),
+                None,
+                Some(&"Studio Display".to_string()),
+                0
+            ),
+            "Studio Display"
+        );
+        assert_eq!(
+            display_label_from_names(Some("Monitor #41041"), None, None, 0),
+            "Display 1"
+        );
+        assert_eq!(
+            display_label_from_names(Some("Studio Display"), None, None, 1),
+            "Studio Display"
+        );
     }
 
     #[test]
