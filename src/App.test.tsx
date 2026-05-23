@@ -3,6 +3,12 @@ import { App, AppShell } from "./App";
 import { renderWithQueryClient } from "./test/render";
 import { invokeMock, listenMock, stopListeningMock } from "./test/tauriMock";
 
+const mockSettings = {
+  corner: "top-right",
+  display_id: "name:Built-in Display",
+  displays: [{ id: "name:Built-in Display", label: "Built-in Display", current: true }],
+} as const;
+
 describe("AppShell", () => {
   it("renders the App sticker mode by default", async () => {
     window.location.hash = "";
@@ -69,7 +75,7 @@ describe("AppShell", () => {
       }
 
       if (command === "get_sticker_settings") {
-        return Promise.resolve({ corner: "top-right" });
+        return Promise.resolve(mockSettings);
       }
 
       return Promise.resolve(undefined);
@@ -94,7 +100,7 @@ describe("AppShell", () => {
       }
 
       if (command === "get_sticker_settings") {
-        return Promise.resolve({ corner: "top-right" });
+        return Promise.resolve(mockSettings);
       }
 
       return Promise.resolve(undefined);

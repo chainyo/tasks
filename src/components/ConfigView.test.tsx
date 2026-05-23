@@ -3,6 +3,15 @@ import { renderWithQueryClient } from "../test/render";
 import { invokeMock, mockTask, mockTasks } from "../test/tauriMock";
 import { ConfigView } from "./ConfigView";
 
+const mockSettings = {
+  corner: "top-right",
+  display_id: "name:Built-in Display",
+  displays: [
+    { id: "name:Built-in Display", label: "Built-in Display", current: true },
+    { id: "name:Studio Display", label: "Studio Display", current: false },
+  ],
+} as const;
+
 function mockConfigCommands() {
   invokeMock.mockImplementation((command, args) => {
     if (command === "get_daily_tasks") {
@@ -10,7 +19,7 @@ function mockConfigCommands() {
     }
 
     if (command === "get_sticker_settings") {
-      return Promise.resolve({ corner: "top-right" });
+      return Promise.resolve(mockSettings);
     }
 
     if (command === "save_daily_tasks") {
@@ -25,7 +34,7 @@ function mockConfigCommands() {
     }
 
     if (command === "save_sticker_settings") {
-      return Promise.resolve(args);
+      return Promise.resolve({ ...mockSettings, ...(args as object) });
     }
 
     return Promise.resolve(undefined);
@@ -68,6 +77,23 @@ describe("ConfigView", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("save_sticker_settings", {
         corner: "bottom-left",
+        display_id: "name:Built-in Display",
+      }),
+    );
+  });
+
+  it("saves the selected sticker display", async () => {
+    mockConfigCommands();
+
+    renderWithQueryClient(<ConfigView />);
+
+    expect(await screen.findByText("Built-in Display")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Studio Display" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("save_sticker_settings", {
+        corner: "top-right",
+        display_id: "name:Studio Display",
       }),
     );
   });
@@ -79,7 +105,7 @@ describe("ConfigView", () => {
       }
 
       if (command === "get_sticker_settings") {
-        return Promise.resolve({ corner: "top-right" });
+        return Promise.resolve(mockSettings);
       }
 
       return Promise.resolve(undefined);
@@ -100,7 +126,7 @@ describe("ConfigView", () => {
       }
 
       if (command === "get_sticker_settings") {
-        return Promise.resolve({ corner: "top-right" });
+        return Promise.resolve(mockSettings);
       }
 
       if (command === "save_daily_tasks") {
@@ -125,7 +151,7 @@ describe("ConfigView", () => {
       }
 
       if (command === "get_sticker_settings") {
-        return Promise.resolve({ corner: "top-right" });
+        return Promise.resolve(mockSettings);
       }
 
       return Promise.resolve(undefined);
@@ -151,7 +177,7 @@ describe("ConfigView", () => {
       }
 
       if (command === "get_sticker_settings") {
-        return Promise.resolve({ corner: "top-right" });
+        return Promise.resolve(mockSettings);
       }
 
       return Promise.resolve(undefined);

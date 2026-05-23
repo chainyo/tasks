@@ -64,6 +64,7 @@ export function ConfigView() {
   const lastSavedTaskSignature = useRef("");
   const [taskRows, setTaskRows] = useState<TaskRow[]>([newTaskRow("new-0")]);
   const [corner, setCorner] = useState<StickerCorner>("top-right");
+  const [displayId, setDisplayId] = useState<string | null>(null);
   const trimmedContents = taskRows.map((taskRow) => taskRow.content.trim()).filter(Boolean);
   const taskSignature = trimmedContents.join("\n");
 
@@ -81,6 +82,11 @@ export function ConfigView() {
   useEffect(() => {
     if (settingsQuery.data) {
       setCorner(settingsQuery.data.corner);
+      setDisplayId(
+        settingsQuery.data.display_id ??
+          settingsQuery.data.displays.find((display) => display.current)?.id ??
+          null,
+      );
     }
   }, [settingsQuery.data]);
 
@@ -178,7 +184,7 @@ export function ConfigView() {
                 type="button"
                 onClick={() => {
                   setCorner(option.value);
-                  saveSettings.mutate({ corner: option.value });
+                  saveSettings.mutate({ corner: option.value, display_id: displayId });
                 }}
               >
                 <span
@@ -194,6 +200,35 @@ export function ConfigView() {
                 />
               </button>
             ))}
+          </div>
+        </fieldset>
+        <fieldset className="space-y-2">
+          <legend className="font-medium text-sm">Sticker display</legend>
+          <div className="grid gap-2">
+            {settingsQuery.data?.displays.length ? (
+              settingsQuery.data.displays.map((display) => (
+                <button
+                  aria-pressed={displayId === display.id}
+                  className={cn(
+                    "flex h-9 items-center justify-between rounded-md border border-input bg-background px-3 text-left text-sm shadow-xs outline-none transition-colors hover:border-primary/60 hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                    displayId === display.id && "border-primary bg-accent ring-2 ring-primary/15",
+                  )}
+                  key={display.id}
+                  type="button"
+                  onClick={() => {
+                    setDisplayId(display.id);
+                    saveSettings.mutate({ corner, display_id: display.id });
+                  }}
+                >
+                  <span>{display.label}</span>
+                  {display.current ? (
+                    <span className="text-muted-foreground text-xs">Current</span>
+                  ) : null}
+                </button>
+              ))
+            ) : (
+              <span className="text-muted-foreground text-sm">Detecting displays...</span>
+            )}
           </div>
         </fieldset>
         {isSaving || saved ? (

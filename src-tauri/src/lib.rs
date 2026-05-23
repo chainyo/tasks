@@ -4,7 +4,7 @@ use chrono::{Duration as ChronoDuration, Local, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use tauri::{
-    Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl,
+    Emitter, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, State, WebviewUrl,
     WebviewWindowBuilder,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -62,6 +62,15 @@ impl Default for StickerCorner {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StickerSettings {
     corner: StickerCorner,
+    display_id: Option<String>,
+    displays: Vec<StickerDisplay>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StickerDisplay {
+    id: String,
+    label: String,
+    current: bool,
 }
 
 #[tauri::command]
@@ -70,22 +79,29 @@ fn get_daily_tasks(state: State<'_, AppState>) -> Result<Vec<DailyTask>, String>
 }
 
 #[tauri::command]
-fn get_sticker_settings(state: State<'_, AppState>) -> Result<StickerSettings, String> {
+fn get_sticker_settings(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<StickerSettings, String> {
     let corner = sticker_corner(&state.db_path).map_err(|error| error.to_string())?;
-    Ok(StickerSettings { corner })
+    let display_id = sticker_display_id(&state.db_path).map_err(|error| error.to_string())?;
+    Ok(sticker_settings(&app, corner, display_id))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn save_sticker_settings(
     corner: StickerCorner,
+    display_id: Option<String>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<StickerSettings, String> {
     save_sticker_corner(&state.db_path, corner).map_err(|error| error.to_string())?;
+    save_sticker_display_id(&state.db_path, display_id.as_deref())
+        .map_err(|error| error.to_string())?;
     if let Some(window) = app.get_webview_window("main") {
-        position_window(&window, corner);
+        position_window(&window, corner, display_id.as_deref());
     }
-    Ok(StickerSettings { corner })
+    Ok(sticker_settings(&app, corner, display_id))
 }
 
 #[tauri::command]
@@ -146,11 +162,16 @@ fn resize_sticker_window(
     let scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
     let current_width = current_size.width as f64 / scale_factor;
     let next_height = height.max(32) as f64;
+    let next_size = PhysicalSize::new(
+        current_size.width,
+        (next_height * scale_factor).ceil() as u32,
+    );
     window
         .set_size(LogicalSize::new(current_width, next_height))
         .map_err(|error| error.to_string())?;
     let corner = sticker_corner(&state.db_path).unwrap_or_default();
-    position_window(&window, corner);
+    let display_id = sticker_display_id(&state.db_path).unwrap_or_default();
+    position_window_with_size(&window, corner, display_id.as_deref(), next_size);
     Ok(())
 }
 
@@ -242,7 +263,8 @@ fn position_main_window(app: &tauri::App) {
     };
     let state = app.state::<AppState>();
     let corner = sticker_corner(&state.db_path).unwrap_or_default();
-    position_window(&window, corner);
+    let display_id = sticker_display_id(&state.db_path).unwrap_or_default();
+    position_window(&window, corner, display_id.as_deref());
 }
 
 fn sync_sticker_visibility(app: &tauri::App, path: &PathBuf) {
@@ -270,20 +292,99 @@ fn start_sticker_visibility_poll(app: tauri::AppHandle, path: PathBuf) {
             } else {
                 let _ = window.show();
                 let corner = sticker_corner(&path).unwrap_or_default();
-                position_window(&window, corner);
+                let display_id = sticker_display_id(&path).unwrap_or_default();
+                position_window(&window, corner, display_id.as_deref());
             }
         }
     });
 }
 
-fn position_window(window: &tauri::WebviewWindow, corner: StickerCorner) {
-    let Ok(Some(monitor)) = window.current_monitor() else {
-        return;
-    };
-    let work_area = monitor.work_area();
+fn sticker_settings(
+    app: &tauri::AppHandle,
+    corner: StickerCorner,
+    display_id: Option<String>,
+) -> StickerSettings {
+    let displays = app
+        .get_webview_window("main")
+        .and_then(|window| sticker_displays(&window, display_id.as_deref()).ok())
+        .unwrap_or_default();
+
+    StickerSettings {
+        corner,
+        display_id,
+        displays,
+    }
+}
+
+fn sticker_displays(
+    window: &tauri::WebviewWindow,
+    selected_display_id: Option<&str>,
+) -> tauri::Result<Vec<StickerDisplay>> {
+    let current_id = window
+        .current_monitor()?
+        .map(|monitor| monitor_id(&monitor));
+    Ok(window
+        .available_monitors()?
+        .into_iter()
+        .enumerate()
+        .map(|(index, monitor)| {
+            let id = monitor_id(&monitor);
+            let current = selected_display_id
+                .map(|selected_id| selected_id == id)
+                .unwrap_or_else(|| current_id.as_deref() == Some(id.as_str()));
+
+            StickerDisplay {
+                id,
+                label: monitor_label(&monitor, index),
+                current,
+            }
+        })
+        .collect())
+}
+
+fn monitor_label(monitor: &Monitor, index: usize) -> String {
+    monitor
+        .name()
+        .filter(|name| !name.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| format!("Display {}", index + 1))
+}
+
+fn monitor_id(monitor: &Monitor) -> String {
+    if let Some(name) = monitor.name().filter(|name| !name.trim().is_empty()) {
+        return monitor_name_id(name);
+    }
+
+    let position = monitor.position();
+    let size = monitor.size();
+    monitor_bounds_id(position.x, position.y, size.width, size.height)
+}
+
+fn monitor_name_id(name: &str) -> String {
+    format!("name:{name}")
+}
+
+fn monitor_bounds_id(x: i32, y: i32, width: u32, height: u32) -> String {
+    format!("bounds:{x}:{y}:{width}:{height}")
+}
+
+fn position_window(window: &tauri::WebviewWindow, corner: StickerCorner, display_id: Option<&str>) {
     let window_size = window.outer_size().ok();
     let fallback_size = PhysicalSize::new(214, 86);
     let size = window_size.unwrap_or(fallback_size);
+    position_window_with_size(window, corner, display_id, size);
+}
+
+fn position_window_with_size(
+    window: &tauri::WebviewWindow,
+    corner: StickerCorner,
+    display_id: Option<&str>,
+    size: PhysicalSize<u32>,
+) {
+    let Ok(Some(monitor)) = target_monitor(window, display_id) else {
+        return;
+    };
+    let work_area = monitor.work_area();
     let position = corner_position(
         corner,
         work_area.position.x,
@@ -295,6 +396,23 @@ fn position_window(window: &tauri::WebviewWindow, corner: StickerCorner) {
         18,
     );
     let _ = window.set_position(position);
+}
+
+fn target_monitor(
+    window: &tauri::WebviewWindow,
+    display_id: Option<&str>,
+) -> tauri::Result<Option<Monitor>> {
+    if let Some(display_id) = display_id {
+        if let Some(monitor) = window
+            .available_monitors()?
+            .into_iter()
+            .find(|monitor| monitor_id(monitor) == display_id)
+        {
+            return Ok(Some(monitor));
+        }
+    }
+
+    window.current_monitor()
 }
 
 fn corner_position(
@@ -453,6 +571,17 @@ fn sticker_corner(path: &PathBuf) -> rusqlite::Result<StickerCorner> {
         .unwrap_or_default())
 }
 
+fn sticker_display_id(path: &PathBuf) -> rusqlite::Result<Option<String>> {
+    let connection = open_initialized(path)?;
+    connection
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'sticker_display_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+}
+
 fn save_sticker_corner(path: &PathBuf, corner: StickerCorner) -> rusqlite::Result<()> {
     let connection = open_initialized(path)?;
     connection.execute(
@@ -463,6 +592,25 @@ fn save_sticker_corner(path: &PathBuf, corner: StickerCorner) -> rusqlite::Resul
         ",
         [corner.as_str()],
     )?;
+    Ok(())
+}
+
+fn save_sticker_display_id(path: &PathBuf, display_id: Option<&str>) -> rusqlite::Result<()> {
+    let connection = open_initialized(path)?;
+
+    if let Some(display_id) = display_id.filter(|value| !value.trim().is_empty()) {
+        connection.execute(
+            "
+            INSERT INTO settings (key, value)
+            VALUES ('sticker_display_id', ?1)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            ",
+            [display_id],
+        )?;
+    } else {
+        connection.execute("DELETE FROM settings WHERE key = 'sticker_display_id'", [])?;
+    }
+
     Ok(())
 }
 
@@ -656,11 +804,46 @@ mod tests {
     }
 
     #[test]
+    fn saves_sticker_display_setting() {
+        let path = database_path();
+
+        assert_eq!(sticker_display_id(&path).expect("display"), None);
+
+        save_sticker_display_id(&path, Some("name:Studio Display")).expect("saved display");
+
+        assert_eq!(
+            sticker_display_id(&path).expect("display"),
+            Some("name:Studio Display".to_string())
+        );
+
+        save_sticker_display_id(&path, None).expect("cleared display");
+
+        assert_eq!(sticker_display_id(&path).expect("display"), None);
+    }
+
+    #[test]
+    fn builds_stable_monitor_ids() {
+        assert_eq!(monitor_name_id("Studio Display"), "name:Studio Display");
+        assert_eq!(monitor_bounds_id(0, 0, 1440, 900), "bounds:0:0:1440:900");
+    }
+
+    #[test]
     fn positions_bottom_right_inside_work_area() {
         let position = corner_position(StickerCorner::BottomRight, 0, 25, 1440, 835, 214, 86, 18);
 
         assert_eq!(position.x, 1208);
         assert_eq!(position.y, 756);
+    }
+
+    #[test]
+    fn positions_resized_bottom_right_by_new_height() {
+        let initial_position =
+            corner_position(StickerCorner::BottomRight, 0, 25, 1440, 835, 214, 32, 18);
+        let resized_position =
+            corner_position(StickerCorner::BottomRight, 0, 25, 1440, 835, 214, 120, 18);
+
+        assert_eq!(initial_position.y, 810);
+        assert_eq!(resized_position.y, 722);
     }
 
     #[test]

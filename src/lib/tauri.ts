@@ -14,8 +14,21 @@ export type DailyTaskUpdate = {
 
 export type StickerCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
+export type StickerDisplay = {
+  id: string;
+  label: string;
+  current: boolean;
+};
+
 export type StickerSettings = {
   corner: StickerCorner;
+  display_id: string | null;
+  displays: StickerDisplay[];
+};
+
+export type StickerSettingsUpdate = {
+  corner: StickerCorner;
+  display_id: string | null;
 };
 
 export function getDailyTasks(): Promise<DailyTask[]> {
@@ -26,7 +39,7 @@ export function getStickerSettings(): Promise<StickerSettings> {
   return invoke<StickerSettings>("get_sticker_settings");
 }
 
-export function saveStickerSettings(settings: StickerSettings): Promise<StickerSettings> {
+export function saveStickerSettings(settings: StickerSettingsUpdate): Promise<StickerSettings> {
   return invoke<StickerSettings>("save_sticker_settings", settings);
 }
 

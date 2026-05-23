@@ -9,6 +9,7 @@ import {
   listenDailyTasksChanged,
   reorderDailyTasks,
   type StickerSettings,
+  type StickerSettingsUpdate,
   saveDailyTasks,
   saveStickerSettings,
   setTodayCompleted,
@@ -58,7 +59,7 @@ export function useSaveStickerSettings() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (settings: StickerSettings) => saveStickerSettings(settings),
+    mutationFn: (settings: StickerSettingsUpdate) => saveStickerSettings(settings),
     onSuccess: (settings) =>
       queryClient.setQueryData<StickerSettings>(stickerSettingsQueryKey, settings),
   });
