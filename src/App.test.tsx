@@ -1,5 +1,8 @@
-import { screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen } from "@testing-library/react";
+import { afterEach, vi } from "vitest";
 import { App, AppShell } from "./App";
+import { dailyTaskQueryKey, useDailyTaskSync } from "./hooks/useDailyTask";
 import { renderWithQueryClient } from "./test/render";
 import { invokeMock, listenMock, stopListeningMock } from "./test/tauriMock";
 
@@ -8,6 +11,10 @@ const mockSettings = {
   display_id: "name:Built-in Display",
   displays: [{ id: "name:Built-in Display", label: "Built-in Display", current: true }],
 } as const;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("AppShell", () => {
   it("renders the App sticker mode by default", async () => {
@@ -58,6 +65,30 @@ describe("AppShell", () => {
     rendered.unmount();
     await Promise.resolve();
     expect(stopListeningMock).toHaveBeenCalled();
+  });
+
+  it("invalidates sticker tasks after the 5 AM task day rollover", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 4, 18, 4, 59, 59, 500));
+    const queryClient = new QueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    function SyncOnly() {
+      useDailyTaskSync();
+      return null;
+    }
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SyncOnly />
+      </QueryClientProvider>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: dailyTaskQueryKey });
   });
 
   it("renders the App config mode from the hash", async () => {

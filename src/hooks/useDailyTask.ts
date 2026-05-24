@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { millisecondsUntilNextTaskDay } from "../lib/date";
 import {
   type DailyTask,
   type DailyTaskUpdate,
@@ -17,6 +18,7 @@ import {
 
 export const dailyTaskQueryKey = ["daily-tasks"] as const;
 export const stickerSettingsQueryKey = ["sticker-settings"] as const;
+const taskDayRolloverBufferMs = 1000;
 
 export function useDailyTask() {
   return useQuery({
@@ -42,6 +44,25 @@ export function useDailyTaskSync() {
 
     return () => {
       void unlisten.then((stopListening) => stopListening());
+    };
+  }, [queryClient]);
+
+  useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    const scheduleNextTaskDayRefresh = () => {
+      timeout = setTimeout(() => {
+        void queryClient.invalidateQueries({ queryKey: dailyTaskQueryKey });
+        scheduleNextTaskDayRefresh();
+      }, millisecondsUntilNextTaskDay() + taskDayRolloverBufferMs);
+    };
+
+    scheduleNextTaskDayRefresh();
+
+    return () => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
     };
   }, [queryClient]);
 }
